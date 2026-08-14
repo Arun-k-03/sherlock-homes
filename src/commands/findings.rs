@@ -1,20 +1,44 @@
 use crate::database::Database;
 
-pub fn list(db: &Database, case_id: &str) -> crate::Result<()> {
+pub fn list(db: &Database, case_id: &str, format: Option<&str>) -> crate::Result<()> {
     let findings = db.list_findings(case_id)?;
+    if let Some(fmt) = format {
+        let f = fmt.to_ascii_lowercase();
+        if f == "json" || f == "jsonl" {
+            println!("{}", serde_json::to_string_pretty(&findings)?);
+            return Ok(());
+        }
+        if f == "sarif" {
+            return Err(crate::SherlockError::Report(
+                "SARIF is produced by `sherlock report CASE --format sarif`".into(),
+            ));
+        }
+    }
     if findings.is_empty() {
         println!("No findings for {case_id}.");
         return Ok(());
     }
-    println!("ID         SEV        CONF               TITLE");
+    println!("ID                       SEV        CONF               TITLE");
     for f in findings {
         println!(
-            "{:<10} {:<10} {:<18} {}",
+            "{:<24} {:<10} {:<18} {}",
             f.id,
             f.severity.label(),
             f.confidence.label(),
             f.title
         );
+        let (sample, remaining) = f.sample_affected_endpoints(5);
+        if sample.len() > 1 || remaining > 0 {
+            println!(
+                "  affected: {}{}",
+                sample.join(", "),
+                if remaining > 0 {
+                    format!(" (+{remaining} more)")
+                } else {
+                    String::new()
+                }
+            );
+        }
     }
     Ok(())
 }

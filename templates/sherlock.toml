@@ -16,6 +16,10 @@ max_response_bytes = 2000000
 max_redirects = 8
 user_agent = "SherlockHomes/1.0 (Cyber Investigation Engine)"
 respect_robots = false
+max_pages = 250
+max_requests = 500
+max_queue = 1000
+max_children_per_parent = 80
 
 [reports]
 default_formats = ["pdf", "html", "json"]

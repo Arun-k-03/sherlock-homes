@@ -16,6 +16,11 @@ static JWT: Lazy<Regex> = Lazy::new(|| {
 });
 static AWS: Lazy<Regex> = Lazy::new(|| Regex::new(r"AKIA[0-9A-Z]{16}").expect("re"));
 
+static PEM: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----")
+        .expect("re")
+});
+
 pub fn redact_text(input: &str) -> String {
     let mut s = AUTH.replace_all(input, "$1[REDACTED]").into_owned();
     s = BASIC.replace_all(&s, "$1[REDACTED]").into_owned();
@@ -23,6 +28,12 @@ pub fn redact_text(input: &str) -> String {
     s = API_KEY_HDR.replace_all(&s, "$1[REDACTED]").into_owned();
     s = JWT.replace_all(&s, "[REDACTED_JWT]").into_owned();
     s = AWS.replace_all(&s, "[REDACTED_AWS_KEY]").into_owned();
+    s = PEM
+        .replace_all(
+            &s,
+            "-----BEGIN PRIVATE KEY----- [REDACTED] -----END PRIVATE KEY-----",
+        )
+        .into_owned();
     s
 }
 

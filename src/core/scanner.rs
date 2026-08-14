@@ -12,7 +12,9 @@ use crate::evidence::redact_text;
 use crate::ids::CaseId;
 use crate::network::HttpEngine;
 use crate::ui::renderer::{RenderMode, Renderer};
+use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -93,20 +95,24 @@ pub async fn run_scan(
         db.create_case(&case_id, url.as_str(), opts.mode_str())?;
     }
 
-    let events = EventBus::new(4096);
+    renderer.arm_cinematic(cfg.ui.animations && !cfg.ui.reduced_motion);
+
+    let mut held = Renderer::new(RenderMode::Machine, false, false);
+    std::mem::swap(renderer, &mut held);
+    let live = Arc::new(Mutex::new(held));
+    let events = EventBus::new(4096).with_ui({
+        let live = live.clone();
+        Arc::new(move |ev: ScanEvent| {
+            live.lock().handle(&ev);
+        })
+    });
     let mut rx = events.subscribe();
     let case_for_ui = case_id.0.clone();
-    // Drain events on this task interleaved — we'll emit then poll.
 
-    renderer.handle(&ScanEvent::new(
+    events.emit(ScanEvent::new(
         EventKind::CaseOpened,
         &case_id.0,
-        format!(
-            "Case     {}\nTarget   {}\nMode     {}",
-            case_id.0,
-            url,
-            opts.mode_str().to_uppercase()
-        ),
+        opts.mode_str().to_uppercase(),
     ));
 
     let scope = ScopeGuard::new(&url, &opts.allow, &opts.exclude)?;
@@ -160,21 +166,30 @@ pub async fn run_scan(
         cfg.scan.max_redirects,
         &cfg.scan.user_agent,
         extra,
-    )?;
+    )?
+    .with_telemetry(events.clone(), case_id.0.clone());
     let rate = RateLimiter::new(opts.rate);
     let depth = if opts.hunt { 0 } else { opts.depth };
 
     events.emit(
         ScanEvent::new(EventKind::PhaseProgress, &case_id.0, "discovery")
-            .with_phase("discovery", 10),
+            .with_phase("discovery", 0),
     );
 
-    if renderer.mode != RenderMode::Machine && cfg.ui.animations {
+    let mode = live.lock().mode;
+    if mode != RenderMode::Machine && mode != RenderMode::Cinematic && cfg.ui.animations {
         crate::ui::animations::lens_sweep(52, 12, 40, &cancel).await;
     }
 
+    let limits = crawler::CrawlLimits {
+        max_depth: depth,
+        max_pages: cfg.scan.max_pages,
+        max_requests: cfg.scan.max_requests,
+        max_queue: cfg.scan.max_queue,
+        max_children_per_parent: cfg.scan.max_children_per_parent,
+    };
     let crawl = crawler::crawl(
-        &url, depth, &http, &scope, &rate, &cancel, &events, &case_id.0,
+        &url, &http, &scope, &rate, &cancel, &events, &case_id.0, &limits,
     )
     .await?;
 
@@ -235,24 +250,16 @@ pub async fn run_scan(
 
     for ep in &endpoints {
         let _ = db.insert_endpoint(&case_id.0, ep);
-        renderer.handle(
-            &ScanEvent::new(EventKind::EndpointDiscovered, &case_id.0, ep.key())
-                .with_endpoint(&ep.method, &ep.normalized_path),
-        );
     }
 
     events.emit(
         ScanEvent::new(EventKind::PhaseProgress, &case_id.0, "observation")
-            .with_phase("discovery", 100)
-            .with_phase("observation", 100),
-    );
-    renderer.handle(
-        &ScanEvent::new(EventKind::PhaseProgress, &case_id.0, "observation")
             .with_phase("observation", 100),
     );
 
     if opts.crawl_only {
-        finish(&case_id, db, renderer)?;
+        finish(&case_id, db, &events)?;
+        restore_renderer(renderer, live);
         return Ok(case_id);
     }
 
@@ -267,8 +274,8 @@ pub async fn run_scan(
             break;
         }
         let pct = ((i * 100) / total) as u8;
-        renderer.handle(
-            &ScanEvent::new(EventKind::PhaseProgress, &case_id.0, "investigation")
+        events.emit(
+            ScanEvent::new(EventKind::PhaseProgress, &case_id.0, "investigation")
                 .with_phase("investigation", pct),
         );
         let dctx = DetectorContext {
@@ -286,23 +293,7 @@ pub async fn run_scan(
             }
             match det.analyze(&dctx, ep).await {
                 Ok(found) => {
-                    for c in found {
-                        renderer.handle(&ScanEvent {
-                            kind: EventKind::CandidateFound,
-                            case_id: case_id.0.clone(),
-                            timestamp: chrono::Utc::now(),
-                            message: c.title.clone(),
-                            method: Some(c.method.clone()),
-                            path: Some(c.endpoint.clone()),
-                            parameter: c.parameter.clone(),
-                            severity: Some(c.severity.as_str().into()),
-                            phase: None,
-                            progress: None,
-                            extra: None,
-                        });
-                        let _ = db.insert_candidate(&case_id.0, &c);
-                        candidates.push(c);
-                    }
+                    candidates.extend(found);
                 }
                 Err(crate::SherlockError::Cancelled) => break,
                 Err(e) => tracing::debug!("detector {} skipped: {e}", det.id()),
@@ -310,9 +301,12 @@ pub async fn run_scan(
         }
     }
 
-    renderer.handle(
-        &ScanEvent::new(EventKind::PhaseProgress, &case_id.0, "verification")
-            .with_phase("investigation", 100)
+    events.emit(
+        ScanEvent::new(EventKind::PhaseProgress, &case_id.0, "investigation")
+            .with_phase("investigation", 100),
+    );
+    events.emit(
+        ScanEvent::new(EventKind::PhaseProgress, &case_id.0, "verification")
             .with_phase("verification", 40),
     );
 
@@ -324,38 +318,47 @@ pub async fn run_scan(
         if c.confidence == Confidence::Rejected {
             continue;
         }
-        renderer.handle(&ScanEvent::new(
+        let _ = db.insert_candidate(&case_id.0, &c);
+        events.emit(ScanEvent {
+            kind: EventKind::CandidateFound,
+            case_id: case_id.0.clone(),
+            timestamp: chrono::Utc::now(),
+            message: c.title.clone(),
+            method: Some(c.method.clone()),
+            path: Some(c.endpoint.clone()),
+            parameter: c.parameter.clone(),
+            severity: Some(c.severity.as_str().into()),
+            phase: None,
+            progress: None,
+            finding_id: None,
+            extra: None,
+        });
+        events.emit(ScanEvent::new(
             EventKind::VerificationStarted,
             &case_id.0,
             c.title.clone(),
         ));
-        let fid = db.upsert_finding(&case_id.0, &c)?;
-        let _ = db.add_evidence(
-            &case_id.0,
-            &fid,
-            "http",
-            "",
-            "",
-            &redact_text(&c.evidence_summary),
-        );
+        let stored = db.persist_final_finding(&case_id.0, &c)?;
+        persist_sampled_evidence(db, &case_id.0, &stored.internal_id, &c);
         if c.confidence >= Confidence::HighConfidence {
-            renderer.handle(&ScanEvent::new(
-                EventKind::FindingConfirmed,
-                &case_id.0,
-                format!(
-                    "{}\nFinding: {}\nSeverity: {}\nConfidence: {}",
-                    fid,
-                    c.title,
-                    c.severity.label(),
-                    c.confidence.label()
-                ),
-            ));
-            renderer.finding_line(c.severity, c.confidence, &c.title, &c.method, &c.endpoint);
+            let path_summary = if stored.affected_endpoints.len() > 1 {
+                format!("{} endpoints", stored.affected_endpoints.len())
+            } else {
+                c.endpoint.clone()
+            };
+            events.emit(
+                ScanEvent::new(EventKind::FindingConfirmed, &case_id.0, c.title.clone())
+                    .with_finding_id(&stored.id)
+                    .with_severity(c.severity.as_str())
+                    .with_endpoint(&c.method, &path_summary),
+            );
+            live.lock()
+                .finding_line(c.severity, c.confidence, &c.title, &c.method, &path_summary);
         }
     }
 
-    renderer.handle(
-        &ScanEvent::new(EventKind::PhaseProgress, &case_id.0, "done")
+    events.emit(
+        ScanEvent::new(EventKind::PhaseProgress, &case_id.0, "verification")
             .with_phase("verification", 100),
     );
 
@@ -368,13 +371,16 @@ pub async fn run_scan(
     db.set_resume_state(&case_id.0, &resume.to_string())?;
 
     if cancel.is_cancelled() {
+        live.lock().leave_cinematic();
         db.set_case_status(&case_id.0, "paused")?;
+        restore_renderer(renderer, live);
         eprintln!(
             "Interrupted. Resume with: sherlock case resume {}",
             case_id.0
         );
     } else {
-        finish(&case_id, db, renderer)?;
+        finish(&case_id, db, &events)?;
+        restore_renderer(renderer, live);
     }
 
     while let Ok(ev) = rx.try_recv() {
@@ -398,14 +404,56 @@ impl ScanOptions {
     }
 }
 
-fn finish(case_id: &CaseId, db: &Database, renderer: &mut Renderer) -> crate::Result<()> {
+fn restore_renderer(out: &mut Renderer, live: Arc<Mutex<Renderer>>) {
+    match Arc::try_unwrap(live) {
+        Ok(mutex) => *out = mutex.into_inner(),
+        Err(arc) => {
+            let mut guard = arc.lock();
+            std::mem::swap(out, &mut *guard);
+        }
+    }
+}
+
+fn finish(case_id: &CaseId, db: &Database, events: &EventBus) -> crate::Result<()> {
     db.set_case_status(&case_id.0, "closed")?;
-    renderer.handle(&ScanEvent::new(
+    events.emit(ScanEvent::new(
         EventKind::CaseClosed,
         &case_id.0,
         case_id.0.clone(),
     ));
     Ok(())
+}
+
+fn persist_sampled_evidence(db: &Database, case_id: &str, internal_id: &str, c: &CandidateFinding) {
+    const SAMPLE: usize = 8;
+    let labels: Vec<String> = if c.affected_endpoints.is_empty() {
+        vec![format!("{} {}", c.method, c.endpoint)]
+    } else {
+        c.affected_endpoints.clone()
+    };
+    let total = labels.len();
+    for ep in labels.iter().take(SAMPLE) {
+        let _ = db.add_evidence(
+            case_id,
+            internal_id,
+            "http",
+            "",
+            "",
+            &redact_text(&format!("{ep}: {}", c.evidence_summary)),
+        );
+    }
+    if total > SAMPLE {
+        let _ = db.add_evidence(
+            case_id,
+            internal_id,
+            "summary",
+            "",
+            "",
+            &format!(
+                "Affected endpoints: {total}. Showing {SAMPLE} samples in CLI/report. Full list is stored on the finding record."
+            ),
+        );
+    }
 }
 
 pub fn severity_counts(

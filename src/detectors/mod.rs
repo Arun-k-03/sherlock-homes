@@ -3,6 +3,7 @@ pub mod cors;
 pub mod disclosure;
 pub mod passive;
 pub mod redirects;
+pub mod secrets;
 pub mod xss;
 
 use crate::core::types::{CandidateFinding, Endpoint};

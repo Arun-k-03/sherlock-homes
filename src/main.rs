@@ -20,7 +20,6 @@ async fn main() {
     tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
         cancel_c.cancel();
-        eprintln!("\nStopping new tasks. Flushing the Evidence Vault...");
     });
 
     let cli = Cli::parse();

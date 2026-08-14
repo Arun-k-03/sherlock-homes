@@ -47,9 +47,15 @@ async fn crawl_and_passive_and_reports() {
     let rate = RateLimiter::new(50);
     let cancel = CancellationToken::new();
     let events = sherlock_homes::core::events::EventBus::new(64);
-    let crawled = crawl(&url, 2, &http, &scope, &rate, &cancel, &events, "SH-TEST")
-        .await
-        .unwrap();
+    let limits = sherlock_homes::discovery::CrawlLimits {
+        max_depth: 2,
+        ..Default::default()
+    };
+    let crawled = crawl(
+        &url, &http, &scope, &rate, &cancel, &events, "SH-TEST", &limits,
+    )
+    .await
+    .unwrap();
     assert!(!crawled.pages.is_empty());
     assert!(crawled
         .endpoints

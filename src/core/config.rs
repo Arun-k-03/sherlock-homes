@@ -75,6 +75,27 @@ pub struct ScanConfig {
     pub max_redirects: u32,
     pub user_agent: String,
     pub respect_robots: bool,
+    #[serde(default = "default_max_pages")]
+    pub max_pages: u32,
+    #[serde(default = "default_max_requests")]
+    pub max_requests: u32,
+    #[serde(default = "default_max_queue")]
+    pub max_queue: usize,
+    #[serde(default = "default_max_children")]
+    pub max_children_per_parent: usize,
+}
+
+fn default_max_pages() -> u32 {
+    250
+}
+fn default_max_requests() -> u32 {
+    500
+}
+fn default_max_queue() -> usize {
+    1000
+}
+fn default_max_children() -> usize {
+    80
 }
 
 impl Default for ScanConfig {
@@ -89,6 +110,10 @@ impl Default for ScanConfig {
             max_redirects: 8,
             user_agent: "SherlockHomes/1.0 (Cyber Investigation Engine)".into(),
             respect_robots: false,
+            max_pages: default_max_pages(),
+            max_requests: default_max_requests(),
+            max_queue: default_max_queue(),
+            max_children_per_parent: default_max_children(),
         }
     }
 }

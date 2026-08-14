@@ -1,4 +1,5 @@
 use crate::core::error::{Result, SherlockError};
+use crate::core::events::{EventBus, EventKind, ScanEvent};
 use crate::core::rate_limit::RateLimiter;
 use crate::core::scope::ScopeGuard;
 use crate::evidence::redact_text;
@@ -15,6 +16,8 @@ pub struct HttpEngine {
     extra_headers: HashMap<String, String>,
     max_bytes: usize,
     max_redirects: u32,
+    telemetry: Option<EventBus>,
+    case_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +46,28 @@ impl HttpEngine {
             extra_headers,
             max_bytes,
             max_redirects,
+            telemetry: None,
+            case_id: String::new(),
         })
+    }
+
+    pub fn with_telemetry(mut self, bus: EventBus, case_id: impl Into<String>) -> Self {
+        self.telemetry = Some(bus);
+        self.case_id = case_id.into();
+        self
+    }
+
+    fn emit_http(&self, kind: EventKind, method: &str, url: &Url) {
+        let Some(bus) = &self.telemetry else {
+            return;
+        };
+        if self.case_id.is_empty() {
+            return;
+        }
+        bus.emit(
+            ScanEvent::new(kind, &self.case_id, format!("{method} {}", url.path()))
+                .with_endpoint(method, url.path()),
+        );
     }
 
     pub async fn get(
@@ -94,11 +118,13 @@ impl HttpEngine {
                 req = req.body(b.to_string());
             }
 
+            self.emit_http(EventKind::RequestSent, method, &current);
             let started = Instant::now();
             let resp = tokio::select! {
                 r = req.send() => r.map_err(|e| SherlockError::Network(e.to_string()))?,
                 _ = cancel.cancelled() => return Err(SherlockError::Cancelled),
             };
+            self.emit_http(EventKind::ResponseReceived, method, &current);
             let status = resp.status().as_u16();
             let mut hdrs = HashMap::new();
             for (k, v) in resp.headers().iter() {

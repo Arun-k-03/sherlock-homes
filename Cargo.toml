@@ -10,6 +10,8 @@ readme = "README.md"
 keywords = ["security", "scanner", "cli", "owasp", "dast"]
 categories = ["command-line-utilities", "web-programming"]
 default-run = "sherlock"
+exclude = ["reports", "tmp-clone", "result.json"]
+# repository / homepage: TODO — set after the public GitHub URL exists. Do not invent one.
 
 [[bin]]
 name = "sherlock"
@@ -52,6 +54,7 @@ toml = { version = "0.8", features = ["display"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = "2"
+unicode-width = "0.2"
 uuid = { version = "1", features = ["v4"] }
 which = "6"
 

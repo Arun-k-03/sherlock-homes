@@ -94,6 +94,8 @@ fn parse_line(line: &str, fallback_target: &str) -> Option<CandidateFinding> {
             &format!("nuclei:{template}"),
         ),
         source_engine: "nuclei".into(),
+        host: url.host_str().unwrap_or("").into(),
+        ..Default::default()
     })
 }
 
@@ -117,5 +119,12 @@ mod tests {
         let c = parse_line(line, "https://example.com").unwrap();
         assert_eq!(c.source_engine, "nuclei");
         assert_eq!(c.severity, Severity::Low);
+    }
+
+    #[test]
+    fn malformed_jsonl_is_skipped() {
+        assert!(parse_line("not-json", "https://example.com").is_none());
+        assert!(parse_line("{}", "https://example.com").is_none());
+        assert!(parse_line("{", "https://example.com").is_none());
     }
 }

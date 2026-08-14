@@ -84,6 +84,8 @@ impl Detector for CorsActive {
                     "cors_misconfig",
                 ),
                 source_engine: "sherlock-core".into(),
+                host: endpoint.host.clone(),
+                ..Default::default()
             }]);
         }
         Ok(vec![])

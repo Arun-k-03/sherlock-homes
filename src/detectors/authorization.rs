@@ -106,6 +106,8 @@ impl Detector for AuthzCompare {
                     "authz_inconsistency",
                 ),
                 source_engine: "sherlock-core".into(),
+                host: endpoint.host.clone(),
+                ..Default::default()
             }]);
         }
         Ok(vec![])

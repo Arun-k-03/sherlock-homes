@@ -23,9 +23,6 @@ struct ExposedFiles;
 static STACK: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(Traceback \(most recent call last\)|at [\w$.]+\(.*\.js:\d+|System\.NullReferenceException|org\.springframework|django\.(core|http)|Warning:.*on line \d+)").expect("re")
 });
-static SECRET: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)(api[_-]?key\s*[:=]\s*\S{16,}|secret[_-]?key\s*[:=]\s*\S{8,}|AKIA[0-9A-Z]{16}|-----BEGIN (?:RSA )?PRIVATE KEY-----)").expect("re")
-});
 
 fn page<'a>(
     ctx: &'a DetectorContext<'a>,
@@ -106,6 +103,9 @@ impl Detector for VerboseErrors {
         let Some(p) = page(ctx, endpoint) else {
             return Ok(vec![]);
         };
+        if p.is_binary_asset() {
+            return Ok(vec![]);
+        }
         let text = p.text();
         if STACK.is_match(text) {
             return Ok(vec![cf(
@@ -142,6 +142,9 @@ impl Detector for SourceMaps {
         let Some(p) = page(ctx, endpoint) else {
             return Ok(vec![]);
         };
+        if p.is_binary_asset() {
+            return Ok(vec![]);
+        }
         let refs = crate::discovery::javascript::source_map_refs(p.text());
         if refs.is_empty() && !p.text().contains("sourceMappingURL") {
             return Ok(vec![]);
@@ -177,19 +180,10 @@ impl Detector for Secrets {
         let Some(p) = page(ctx, endpoint) else {
             return Ok(vec![]);
         };
-        if let Some(m) = SECRET.find(p.text()) {
-            let snippet = crate::evidence::redact_text(m.as_str());
-            return Ok(vec![cf(
-                endpoint,
-                "secret_exposure",
-                "Potential secret in response body",
-                "A high-entropy credential-like pattern was found in a response body.".into(),
-                Severity::High,
-                format!("pattern snippet: {snippet}"),
-                Some("CWE-798"),
-            )]);
+        if p.is_binary_asset() {
+            return Ok(vec![]);
         }
-        Ok(vec![])
+        Ok(crate::detectors::secrets::findings_for(endpoint, p.text()))
     }
 }
 
@@ -284,5 +278,7 @@ fn cf(
             class,
         ),
         source_engine: "sherlock-core".into(),
+        host: endpoint.host.clone(),
+        ..Default::default()
     }
 }

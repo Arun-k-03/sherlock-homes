@@ -15,6 +15,6 @@ pub async fn run(
     let mut opts = ScanOptions::from_args(&args, cfg);
     opts.hunt = true;
     let id = run_scan(db, cfg, opts, renderer, cancel).await?;
-    eprintln!("Case file: {id}");
+    renderer.print_case_footer(&id.0);
     Ok(())
 }

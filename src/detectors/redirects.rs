@@ -113,6 +113,8 @@ impl Detector for OpenRedirect {
                         "open_redirect",
                     ),
                     source_engine: "sherlock-core".into(),
+                    host: endpoint.host.clone(),
+                    ..Default::default()
                 });
             }
         }

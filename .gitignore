@@ -16,3 +16,11 @@ sherlock.toml
 *.sarif
 /security-reports/
 Cargo.lock.bak
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.db
+detector-benchmark.json
+/tmp-clone/
+*.log
+.cursor/
