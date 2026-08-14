@@ -1,0 +1,27 @@
+[ui]
+mode = "classic"
+animations = true
+animation_speed = "normal"
+color = true
+ascii_only = false
+reduced_motion = false
+
+[scan]
+mode = "safe"
+rate = 5
+concurrency = 10
+depth = 5
+timeout_seconds = 15
+max_response_bytes = 2000000
+max_redirects = 8
+user_agent = "SherlockHomes/1.0 (Cyber Investigation Engine)"
+respect_robots = false
+
+[reports]
+default_formats = ["pdf", "html", "json"]
+
+[engines]
+nuclei = "auto"
+katana = "auto"
+httpx = "auto"
+zap = "auto"
