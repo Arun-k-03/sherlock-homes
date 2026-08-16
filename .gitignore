@@ -6,7 +6,7 @@
 .env
 .env.*
 !.env.example
-reports/
+/reports/
 *.pdf
 !docs/**
 .DS_Store
@@ -16,3 +16,11 @@ sherlock.toml
 *.sarif
 /security-reports/
 Cargo.lock.bak
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.db
+detector-benchmark.json
+/tmp-clone/
+*.log
+.cursor/

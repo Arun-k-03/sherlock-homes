@@ -35,8 +35,17 @@ impl CaseId {
 }
 
 impl FindingId {
-    pub fn sequential(n: u32) -> Self {
-        Self(format!("SH-F-{n:04}"))
+    /// Case-local sequential display identifier (`F-0001`).
+    pub fn display(n: u32) -> Self {
+        Self(format!("F-{n:04}"))
+    }
+
+    pub fn public(case_id: &str, display_id: &str) -> String {
+        format!("{case_id}/{display_id}")
+    }
+
+    pub fn new_internal() -> String {
+        uuid::Uuid::new_v4().to_string()
     }
 }
 
@@ -118,6 +127,10 @@ mod tests {
 
     #[test]
     fn finding_id_pads() {
-        assert_eq!(FindingId::sequential(1).0, "SH-F-0001");
+        assert_eq!(FindingId::display(1).0, "F-0001");
+        assert_eq!(
+            FindingId::public("SH-260814-B55F", "F-0001"),
+            "SH-260814-B55F/F-0001"
+        );
     }
 }

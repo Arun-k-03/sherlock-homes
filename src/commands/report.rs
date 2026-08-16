@@ -10,7 +10,7 @@ pub fn run(db: &Database, cfg: &AppConfig, args: ReportArgs) -> crate::Result<()
         .as_deref()
         .or_else(|| cfg.reports.default_formats.first().map(|s| s.as_str()))
         .unwrap_or("pdf,html,json");
-    let parsed = ReportFormat::parse_list(formats);
+    let parsed = ReportFormat::parse_list(formats)?;
     if parsed.is_empty() {
         return Err(crate::SherlockError::Report(
             "no valid formats (pdf,html,json,jsonl,sarif,markdown,csv)".into(),

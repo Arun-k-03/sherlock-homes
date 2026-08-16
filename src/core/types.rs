@@ -178,6 +178,39 @@ pub struct CandidateFinding {
     pub evidence_summary: String,
     pub fingerprint: String,
     pub source_engine: String,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub affected_endpoints: Vec<String>,
+}
+
+impl Default for CandidateFinding {
+    fn default() -> Self {
+        Self {
+            detector_id: String::new(),
+            detector_name: String::new(),
+            title: String::new(),
+            description: String::new(),
+            severity: Severity::Informational,
+            confidence: Confidence::Potential,
+            cwe: None,
+            owasp: None,
+            method: String::new(),
+            endpoint: String::new(),
+            parameter: None,
+            evidence_summary: String::new(),
+            fingerprint: String::new(),
+            source_engine: String::new(),
+            host: String::new(),
+            affected_endpoints: Vec::new(),
+        }
+    }
+}
+
+impl CandidateFinding {
+    pub fn observation_label(&self) -> String {
+        format!("{} {}", self.method.to_ascii_uppercase(), self.endpoint)
+    }
 }
 
 #[cfg(test)]

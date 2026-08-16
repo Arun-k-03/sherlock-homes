@@ -1,7 +1,7 @@
 use crate::core::events::{EventKind, ScanEvent};
 use crate::core::types::{Confidence, Severity};
 use crate::ui::ascii;
-use crate::ui::terminal;
+use crate::ui::cinematic::CinematicTui;
 use crate::ui::theme::{color_level, ColorLevel};
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
 use crossterm::{execute, style::Print};
@@ -19,9 +19,11 @@ pub struct Renderer {
     pub mode: RenderMode,
     pub color: bool,
     pub ascii_only: bool,
+    pub animations: bool,
+    pub used_cinematic: bool,
     pub counters: Counters,
-    clues: Vec<String>,
     pub phases: Phases,
+    cinematic: Option<CinematicTui>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -44,22 +46,24 @@ pub struct Phases {
 
 impl Renderer {
     pub fn new(mode: RenderMode, color: bool, ascii_only: bool) -> Self {
-        let mode = match mode {
-            RenderMode::Cinematic if terminal::too_small_for_cinematic() => RenderMode::Classic,
-            other => other,
-        };
         Self {
             mode,
             color,
             ascii_only,
+            animations: true,
+            used_cinematic: false,
             counters: Counters::default(),
-            clues: Vec::new(),
             phases: Phases::default(),
+            cinematic: None,
         }
     }
 
+    pub fn arm_cinematic(&mut self, animations: bool) {
+        self.animations = animations;
+    }
+
     pub fn banner(&self) {
-        if self.mode == RenderMode::Machine {
+        if self.mode == RenderMode::Machine || self.mode == RenderMode::Cinematic {
             return;
         }
         let compact = self.mode == RenderMode::Minimal;
@@ -69,8 +73,8 @@ impl Renderer {
 
     pub fn handle(&mut self, ev: &ScanEvent) {
         match ev.kind {
-            EventKind::RequestSent | EventKind::ResponseReceived => self.counters.requests += 1,
-            EventKind::FindingConfirmed | EventKind::PassiveFinding | EventKind::CandidateFound => {
+            EventKind::RequestSent => self.counters.requests += 1,
+            EventKind::FindingConfirmed | EventKind::PassiveFinding => {
                 if let Some(s) = &ev.severity {
                     match s.as_str() {
                         "critical" => self.counters.critical += 1,
@@ -92,25 +96,72 @@ impl Renderer {
                     }
                 }
             }
+            EventKind::DiscoveryCompleted => {
+                self.phases.discovery = 100;
+                self.phases.observation = 100;
+            }
+            EventKind::CaseClosed => {
+                if self.phases.discovery > 0 {
+                    self.phases.discovery = 100;
+                }
+                if self.phases.observation > 0 {
+                    self.phases.observation = 100;
+                }
+                if self.phases.investigation > 0 {
+                    self.phases.investigation = 100;
+                }
+                if self.phases.verification > 0 {
+                    self.phases.verification = 100;
+                }
+            }
             _ => {}
         }
-        let ts = ev.timestamp.format("%H:%M:%S");
-        let line = format!("{ts} {}", ev.message);
-        self.clues.push(line);
-        if self.clues.len() > 8 {
-            self.clues.remove(0);
-        }
+
         match self.mode {
             RenderMode::Machine => {}
             RenderMode::Minimal => crate::ui::minimal::event(ev),
             RenderMode::Classic => crate::ui::classic::event(ev, self.color),
-            RenderMode::Cinematic => crate::ui::cinematic::draw(
-                ev,
-                &self.counters,
-                &self.clues,
-                &self.phases,
-                self.color,
-            ),
+            RenderMode::Cinematic => self.handle_cinematic(ev),
+        }
+    }
+
+    fn handle_cinematic(&mut self, ev: &ScanEvent) {
+        if self.cinematic.is_none() {
+            match CinematicTui::enter(self.ascii_only, self.color, self.animations) {
+                Ok(ui) => {
+                    self.cinematic = Some(ui);
+                    self.used_cinematic = true;
+                }
+                Err(_) => {
+                    self.mode = RenderMode::Classic;
+                    crate::ui::classic::event(ev, self.color);
+                    return;
+                }
+            }
+        }
+        if let Some(ui) = &mut self.cinematic {
+            if !ev.case_id.is_empty() && ui.state.scan_mode.is_empty() {
+                ui.state.scan_mode = "SAFE".into();
+            }
+            ui.apply(ev);
+            let _ = ui.draw();
+            if ev.kind == EventKind::CaseClosed {
+                ui.shutdown();
+            }
+        }
+    }
+
+    pub fn leave_cinematic(&mut self) {
+        if let Some(ui) = &mut self.cinematic {
+            ui.shutdown();
+        }
+    }
+
+    pub fn print_case_footer(&self, case_id: &str) {
+        println!("Case file: {case_id}");
+        if self.used_cinematic || self.mode == RenderMode::Cinematic {
+            println!("Report:");
+            println!("sherlock report {case_id} --format pdf,html");
         }
     }
 
@@ -123,7 +174,7 @@ impl Renderer {
         path: &str,
     ) {
         match self.mode {
-            RenderMode::Machine => {}
+            RenderMode::Machine | RenderMode::Cinematic => {}
             RenderMode::Minimal => {
                 println!(
                     "[{}] {title}\n{method} {path}\nConfidence: {}",
@@ -131,7 +182,7 @@ impl Renderer {
                     conf.label()
                 );
             }
-            _ => {
+            RenderMode::Classic => {
                 println!();
                 gold(self.color, "SUSPECT IDENTIFIED");
                 println!("Technical Finding:");
@@ -158,17 +209,4 @@ pub fn gold(color: bool, text: &str) {
     } else {
         println!("{text}");
     }
-}
-
-pub fn bar(pct: u8, width: usize) -> String {
-    let filled = ((pct as usize) * width) / 100;
-    let mut s = String::new();
-    for i in 0..width {
-        if i < filled {
-            s.push('#');
-        } else {
-            s.push('-');
-        }
-    }
-    format!("{s} {pct:3}%")
 }

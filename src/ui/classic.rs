@@ -12,9 +12,12 @@ pub fn event(ev: &ScanEvent, color: bool) {
         EventKind::PageDiscovered => println!("[+] Page: {}", ev.message),
         EventKind::EndpointDiscovered => {
             println!(
-                "[CLUE] {} {}",
-                ev.method.as_deref().unwrap_or("-"),
-                ev.path.as_deref().unwrap_or(&ev.message)
+                "[CLUE] {}",
+                crate::core::events::format_endpoint_label(
+                    ev.method.as_deref(),
+                    ev.path.as_deref(),
+                    &ev.message
+                )
             );
         }
         EventKind::ParameterDiscovered => println!("    PARAM  {}", ev.message),

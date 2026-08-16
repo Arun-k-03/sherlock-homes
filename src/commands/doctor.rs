@@ -1,9 +1,10 @@
 use crate::core::config::AppConfig;
-use crate::platform::{architecture, data_dir, detect_os, ensure_writable};
+use crate::database::Database;
+use crate::platform::{architecture, data_dir, db_path, detect_os, ensure_writable};
 use crate::ui::theme::color_level;
 use crate::ui::theme::ColorLevel;
 
-pub fn run(cfg: &AppConfig, machine: bool) -> crate::Result<()> {
+pub fn run(cfg: &AppConfig, machine: bool, database: bool) -> crate::Result<()> {
     let os = detect_os();
     let dir = data_dir()?;
     let writable = ensure_writable(&dir).is_ok();
@@ -14,6 +15,7 @@ pub fn run(cfg: &AppConfig, machine: bool) -> crate::Result<()> {
     };
     let color = color_level();
     let engines = crate::engines::EngineManager::probe(&cfg.engines);
+    let db_report = database_report();
     if machine {
         println!(
             "{}",
@@ -25,6 +27,7 @@ pub fn run(cfg: &AppConfig, machine: bool) -> crate::Result<()> {
                 "sqlite": sqlite,
                 "dns": dns,
                 "color": format!("{color:?}"),
+                "database": db_report,
             })
         );
         return Ok(());
@@ -65,6 +68,7 @@ pub fn run(cfg: &AppConfig, machine: bool) -> crate::Result<()> {
             "DISABLED"
         }
     );
+    print_database_human(&db_report, database);
     for e in engines.all() {
         if e.name == "Sherlock Core" {
             continue;
@@ -77,6 +81,75 @@ pub fn run(cfg: &AppConfig, machine: bool) -> crate::Result<()> {
     }
     println!("\nSherlock core investigation capability is READY.");
     Ok(())
+}
+
+fn database_report() -> serde_json::Value {
+    let path = match db_path() {
+        Ok(p) => p,
+        Err(e) => {
+            return serde_json::json!({
+                "status": "FAILED",
+                "error": e.to_string(),
+            });
+        }
+    };
+    match Database::open(&path) {
+        Ok(db) => match db.migration_report() {
+            Ok(r) => serde_json::json!({
+                "path": path.display().to_string(),
+                "schema_version": r.schema_version,
+                "latest_schema_version": r.latest_version,
+                "status": r.status_label(),
+                "applied": r.applied,
+                "findings_internal_id": r.findings_has_internal_id,
+                "legacy_findings_id": r.findings_has_legacy_id,
+                "detail": r.detail,
+            }),
+            Err(e) => serde_json::json!({
+                "path": path.display().to_string(),
+                "status": "FAILED",
+                "error": e.to_string(),
+            }),
+        },
+        Err(e) => serde_json::json!({
+            "path": path.display().to_string(),
+            "status": "FAILED",
+            "error": e.to_string(),
+        }),
+    }
+}
+
+fn print_database_human(report: &serde_json::Value, verbose: bool) {
+    let status = report
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("FAILED");
+    let schema = report
+        .get("schema_version")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let latest = report
+        .get("latest_schema_version")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    println!("Database schema version: {schema}");
+    println!("Latest schema version:   {latest}");
+    println!("Migration status:        {status}");
+    if verbose {
+        if let Some(path) = report.get("path").and_then(|v| v.as_str()) {
+            println!("Database path:           {path}");
+        }
+        if let Some(applied) = report.get("applied").and_then(|v| v.as_array()) {
+            let list: Vec<&str> = applied.iter().filter_map(|v| v.as_str()).collect();
+            println!("Applied migrations:      {}", list.join(", "));
+        }
+        if let Some(detail) = report.get("detail").and_then(|v| v.as_str()) {
+            println!("Schema detail:           {detail}");
+        }
+        if let Some(err) = report.get("error").and_then(|v| v.as_str()) {
+            println!("Database error:          {err}");
+        }
+    }
 }
 
 fn ready(ok: bool) -> &'static str {

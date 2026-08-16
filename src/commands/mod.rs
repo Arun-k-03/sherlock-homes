@@ -56,7 +56,7 @@ pub async fn dispatch(cli: Cli, cancel: CancellationToken) -> crate::Result<()> 
             clap_complete::generate(shell, &mut cmd, "sherlock", &mut std::io::stdout());
             Ok(())
         }
-        Some(Commands::Doctor) => doctor::run(&cfg, machine),
+        Some(Commands::Doctor { database }) => doctor::run(&cfg, machine, database),
         Some(Commands::Engines) => engines::run(&cfg),
         Some(Commands::Config { action }) => match action {
             ConfigCmd::Show => config::show(&cfg),
@@ -106,23 +106,28 @@ pub async fn dispatch(cli: Cli, cancel: CancellationToken) -> crate::Result<()> 
                 }
             }
         }
+        Some(Commands::Findings { case_id }) => {
+            reject_document_format("findings", cli.format.as_deref())?;
+            let db = Database::open(&db_path()?)?;
+            findings::list(&db, &case_id, cli.format.as_deref())
+        }
         Some(Commands::Clues { case_id }) => {
+            reject_document_format("clues", cli.format.as_deref())?;
             let db = Database::open(&db_path()?)?;
             cases::clues(&db, &case_id)
         }
         Some(Commands::Suspects { case_id }) => {
+            reject_document_format("suspects", cli.format.as_deref())?;
             let db = Database::open(&db_path()?)?;
             findings::suspects(&db, &case_id)
         }
-        Some(Commands::Findings { case_id }) => {
-            let db = Database::open(&db_path()?)?;
-            findings::list(&db, &case_id)
-        }
         Some(Commands::Evidence { finding_id }) => {
+            reject_document_format("evidence", cli.format.as_deref())?;
             let db = Database::open(&db_path()?)?;
             evidence::show(&db, &finding_id)
         }
         Some(Commands::Verdict { case_id }) => {
+            reject_document_format("verdict", cli.format.as_deref())?;
             let db = Database::open(&db_path()?)?;
             findings::verdict(&db, &case_id)
         }
@@ -139,4 +144,17 @@ pub async fn dispatch(cli: Cli, cancel: CancellationToken) -> crate::Result<()> 
             }
         }
     }
+}
+
+fn reject_document_format(command: &str, format: Option<&str>) -> crate::Result<()> {
+    let Some(fmt) = format else {
+        return Ok(());
+    };
+    let f = fmt.to_ascii_lowercase();
+    if matches!(f.as_str(), "pdf" | "html" | "markdown" | "md" | "csv") {
+        return Err(crate::SherlockError::Report(format!(
+            "`sherlock {command}` does not write {fmt} documents. Use: sherlock report CASE --format {fmt}"
+        )));
+    }
+    Ok(())
 }

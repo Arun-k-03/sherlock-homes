@@ -39,6 +39,11 @@ impl Database {
         })
     }
 
+    pub fn migration_report(&self) -> Result<migrations::MigrationReport> {
+        let conn = self.conn.lock();
+        migrations::inspect(&conn)
+    }
+
     pub fn create_case(&self, id: &CaseId, target: &str, mode: &str) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         let conn = self.conn.lock();
@@ -221,12 +226,8 @@ impl Database {
     }
 
     pub fn next_finding_seq(&self, case_id: &str) -> Result<u32> {
-        let n: i64 = self.conn.lock().query_row(
-            "SELECT COUNT(*) FROM findings WHERE case_id = ?1",
-            [case_id],
-            |r| r.get(0),
-        )?;
-        Ok((n as u32) + 1)
+        let conn = self.conn.lock();
+        next_display_seq(&conn, case_id)
     }
 
     pub fn next_evidence_seq(&self, case_id: &str) -> Result<u32> {
@@ -292,22 +293,38 @@ impl Database {
         Ok((rid, sid))
     }
 
-    pub fn upsert_finding(&self, case_id: &str, c: &CandidateFinding) -> Result<String> {
-        if let Some(existing) = self.finding_by_fingerprint(case_id, &c.fingerprint)? {
-            return Ok(existing.id);
-        }
-        let seq = self.next_finding_seq(case_id)?;
-        let id = FindingId::sequential(seq).0;
-        let now = chrono::Utc::now().to_rfc3339();
+    /// Single ownership point for final finding persistence.
+    /// Merges on `(case_id, correlate fingerprint)` instead of inserting duplicates.
+    pub fn persist_final_finding(
+        &self,
+        case_id: &str,
+        incoming: &CandidateFinding,
+    ) -> Result<StoredFinding> {
+        let c = crate::correlation::dedup::prepare(incoming);
         let rem = crate::remediation::for_detector(&c.detector_id);
-        self.conn.lock().execute(
+        let endpoints_json = serde_json::to_string(&c.affected_endpoints)?;
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        let existing = select_finding_by_fingerprint(&tx, case_id, &c.fingerprint)?;
+        if let Some(found) = existing {
+            merge_existing_finding(&tx, &found, &c, &endpoints_json)?;
+            tx.commit()?;
+            return load_finding_by_internal(&conn, &found.internal_id)?
+                .ok_or(crate::SherlockError::FindingNotFound(found.internal_id));
+        }
+        let seq = next_display_seq(&tx, case_id)?;
+        let display_id = FindingId::display(seq).0;
+        let internal_id = FindingId::new_internal();
+        let now = chrono::Utc::now().to_rfc3339();
+        let insert = tx.execute(
             "INSERT INTO findings
-             (id, case_id, title, severity, confidence, cwe, owasp, cvss, method, endpoint, parameter,
-              detector, source_engine, description, evidence_summary, remediation, fingerprint, status, created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,NULL,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+             (internal_id, case_id, display_id, title, severity, confidence, cwe, owasp, cvss, method, endpoint, parameter,
+              detector, source_engine, description, evidence_summary, remediation, fingerprint, status, created_at, host, affected_endpoints)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
             params![
-                id,
+                internal_id,
                 case_id,
+                display_id,
                 c.title,
                 c.severity.as_str(),
                 c.confidence.as_str(),
@@ -324,9 +341,30 @@ impl Database {
                 c.fingerprint,
                 c.confidence.as_str(),
                 now,
+                c.host,
+                endpoints_json,
             ],
-        )?;
-        Ok(id)
+        );
+        match insert {
+            Ok(_) => {}
+            Err(e) if is_fingerprint_unique_violation(&e) => {
+                let found = select_finding_by_fingerprint(&tx, case_id, &c.fingerprint)?
+                    .ok_or_else(|| crate::SherlockError::Database(e.to_string()))?;
+                let endpoints_json = serde_json::to_string(&c.affected_endpoints)?;
+                merge_existing_finding(&tx, &found, &c, &endpoints_json)?;
+                tx.commit()?;
+                return load_finding_by_internal(&conn, &found.internal_id)?
+                    .ok_or(crate::SherlockError::FindingNotFound(found.internal_id));
+            }
+            Err(e) => return Err(e.into()),
+        }
+        tx.commit()?;
+        load_finding_by_internal(&conn, &internal_id)?
+            .ok_or(crate::SherlockError::FindingNotFound(internal_id))
+    }
+
+    pub fn upsert_finding(&self, case_id: &str, c: &CandidateFinding) -> Result<String> {
+        Ok(self.persist_final_finding(case_id, c)?.internal_id)
     }
 
     pub fn add_evidence(
@@ -338,96 +376,49 @@ impl Database {
         resp: &str,
         notes: &str,
     ) -> Result<String> {
+        let finding = self
+            .get_finding(finding_id)?
+            .ok_or_else(|| crate::SherlockError::FindingNotFound(finding_id.into()))?;
         let seq = self.next_evidence_seq(case_id)?;
-        let id = EvidenceId::sequential(seq).0;
+        let id = format!("{case_id}/{}", EvidenceId::sequential(seq).0);
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.lock().execute(
             "INSERT INTO evidence (id, finding_id, case_id, kind, request_redacted, response_redacted, notes, created_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![id, finding_id, case_id, kind, req, resp, notes, now],
+            params![id, finding.internal_id, case_id, kind, req, resp, notes, now],
         )?;
         Ok(id)
     }
 
     pub fn finding_by_fingerprint(&self, case_id: &str, fp: &str) -> Result<Option<StoredFinding>> {
-        self.list_findings(case_id)
-            .map(|v| v.into_iter().find(|f| f.fingerprint == fp))
+        let conn = self.conn.lock();
+        select_finding_by_fingerprint(&conn, case_id, fp)
     }
 
     pub fn list_findings(&self, case_id: &str) -> Result<Vec<StoredFinding>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, case_id, title, severity, confidence, cwe, owasp, cvss, method, endpoint, parameter,
-                    detector, source_engine, description, evidence_summary, remediation, fingerprint, status
-             FROM findings WHERE case_id = ?1 ORDER BY id",
-        )?;
-        let rows = stmt.query_map([case_id], |r| {
-            Ok(StoredFinding {
-                id: r.get(0)?,
-                case_id: r.get(1)?,
-                title: r.get(2)?,
-                severity: parse_sev(&r.get::<_, String>(3)?),
-                confidence: parse_conf(&r.get::<_, String>(4)?),
-                cwe: r.get(5)?,
-                owasp: r.get(6)?,
-                cvss: r.get(7)?,
-                method: r.get(8)?,
-                endpoint: r.get(9)?,
-                parameter: r.get(10)?,
-                detector: r.get(11)?,
-                source_engine: r.get(12)?,
-                description: r.get(13)?,
-                evidence_summary: r.get(14)?,
-                remediation: r.get(15)?,
-                fingerprint: r.get(16)?,
-                status: r.get(17)?,
-            })
-        })?;
+        let mut stmt = conn.prepare(&format!(
+            "{FINDING_SELECT} FROM findings WHERE case_id = ?1 ORDER BY CAST(substr(display_id, 3) AS INTEGER)"
+        ))?;
+        let rows = stmt.query_map([case_id], map_finding_row)?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     pub fn get_finding(&self, finding_id: &str) -> Result<Option<StoredFinding>> {
         let conn = self.conn.lock();
-        let rec = conn
-            .query_row(
-                "SELECT id, case_id, title, severity, confidence, cwe, owasp, cvss, method, endpoint, parameter,
-                        detector, source_engine, description, evidence_summary, remediation, fingerprint, status
-                 FROM findings WHERE id = ?1",
-                [finding_id],
-                |r| {
-                    Ok(StoredFinding {
-                        id: r.get(0)?,
-                        case_id: r.get(1)?,
-                        title: r.get(2)?,
-                        severity: parse_sev(&r.get::<_, String>(3)?),
-                        confidence: parse_conf(&r.get::<_, String>(4)?),
-                        cwe: r.get(5)?,
-                        owasp: r.get(6)?,
-                        cvss: r.get(7)?,
-                        method: r.get(8)?,
-                        endpoint: r.get(9)?,
-                        parameter: r.get(10)?,
-                        detector: r.get(11)?,
-                        source_engine: r.get(12)?,
-                        description: r.get(13)?,
-                        evidence_summary: r.get(14)?,
-                        remediation: r.get(15)?,
-                        fingerprint: r.get(16)?,
-                        status: r.get(17)?,
-                    })
-                },
-            )
-            .optional()?;
-        Ok(rec)
+        resolve_finding(&conn, finding_id)
     }
 
     pub fn list_evidence_for_finding(&self, finding_id: &str) -> Result<Vec<StoredEvidence>> {
         let conn = self.conn.lock();
+        let Some(finding) = resolve_finding(&conn, finding_id)? else {
+            return Ok(vec![]);
+        };
         let mut stmt = conn.prepare(
             "SELECT id, finding_id, case_id, kind, request_redacted, response_redacted, notes
              FROM evidence WHERE finding_id = ?1",
         )?;
-        let rows = stmt.query_map([finding_id], |r| {
+        let rows = stmt.query_map([finding.internal_id], |r| {
             Ok(StoredEvidence {
                 id: r.get(0)?,
                 finding_id: r.get(1)?,
@@ -439,6 +430,34 @@ impl Database {
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn delete_case(&self, id: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        if conn.query_row("SELECT COUNT(*) FROM cases WHERE id = ?1", [id], |r| {
+            r.get::<_, i64>(0)
+        })? == 0
+        {
+            return Ok(false);
+        }
+        conn.execute("DELETE FROM evidence WHERE case_id = ?1", [id])?;
+        conn.execute("DELETE FROM findings WHERE case_id = ?1", [id])?;
+        conn.execute("DELETE FROM candidate_findings WHERE case_id = ?1", [id])?;
+        conn.execute("DELETE FROM parameters WHERE case_id = ?1", [id])?;
+        conn.execute("DELETE FROM endpoints WHERE case_id = ?1", [id])?;
+        conn.execute("DELETE FROM responses WHERE case_id = ?1", [id])?;
+        conn.execute("DELETE FROM requests WHERE case_id = ?1", [id])?;
+        conn.execute("DELETE FROM pages WHERE case_id = ?1", [id])?;
+        conn.execute("DELETE FROM technologies WHERE case_id = ?1", [id])?;
+        conn.execute("DELETE FROM hosts WHERE case_id = ?1", [id])?;
+        conn.execute("DELETE FROM detector_results WHERE case_id = ?1", [id])?;
+        conn.execute("DELETE FROM scanner_events WHERE case_id = ?1", [id])?;
+        conn.execute("DELETE FROM reports WHERE case_id = ?1", [id])?;
+        conn.execute("DELETE FROM scan_configs WHERE case_id = ?1", [id])?;
+        conn.execute("DELETE FROM scans WHERE case_id = ?1", [id])?;
+        conn.execute("DELETE FROM targets WHERE case_id = ?1", [id])?;
+        conn.execute("DELETE FROM cases WHERE id = ?1", [id])?;
+        Ok(true)
     }
 
     pub fn insert_tech(&self, case_id: &str, name: &str, evidence: &str) -> Result<()> {
@@ -543,6 +562,194 @@ impl Database {
     }
 }
 
+const FINDING_SELECT: &str = "SELECT internal_id, case_id, display_id, title, severity, confidence, cwe, owasp, cvss, method, endpoint, parameter, detector, source_engine, description, evidence_summary, remediation, fingerprint, status, host, affected_endpoints";
+
+fn next_display_seq(conn: &Connection, case_id: &str) -> Result<u32> {
+    let n: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(CAST(substr(display_id, 3) AS INTEGER)), 0)
+         FROM findings WHERE case_id = ?1 AND display_id LIKE 'F-%'",
+        [case_id],
+        |r| r.get(0),
+    )?;
+    Ok((n as u32) + 1)
+}
+
+fn map_finding_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<StoredFinding> {
+    let internal_id: String = r.get(0)?;
+    let case_id: String = r.get(1)?;
+    let display_id: String = r.get(2)?;
+    let affected_raw: String = r.get(20)?;
+    let affected_endpoints: Vec<String> = serde_json::from_str(&affected_raw).unwrap_or_default();
+    Ok(StoredFinding {
+        id: FindingId::public(&case_id, &display_id),
+        internal_id,
+        case_id,
+        display_id,
+        title: r.get(3)?,
+        severity: parse_sev(&r.get::<_, String>(4)?),
+        confidence: parse_conf(&r.get::<_, String>(5)?),
+        cwe: r.get(6)?,
+        owasp: r.get(7)?,
+        cvss: r.get(8)?,
+        method: r.get(9)?,
+        endpoint: r.get(10)?,
+        parameter: r.get(11)?,
+        detector: r.get(12)?,
+        source_engine: r.get(13)?,
+        description: r.get(14)?,
+        evidence_summary: r.get(15)?,
+        remediation: r.get(16)?,
+        fingerprint: r.get(17)?,
+        status: r.get(18)?,
+        host: r.get(19)?,
+        affected_endpoints,
+    })
+}
+
+fn load_finding_by_internal(conn: &Connection, internal_id: &str) -> Result<Option<StoredFinding>> {
+    let rec = conn
+        .query_row(
+            &format!("{FINDING_SELECT} FROM findings WHERE internal_id = ?1"),
+            [internal_id],
+            map_finding_row,
+        )
+        .optional()?;
+    Ok(rec)
+}
+
+fn select_finding_by_fingerprint(
+    conn: &Connection,
+    case_id: &str,
+    fp: &str,
+) -> Result<Option<StoredFinding>> {
+    let rec = conn
+        .query_row(
+            &format!("{FINDING_SELECT} FROM findings WHERE case_id = ?1 AND fingerprint = ?2"),
+            params![case_id, fp],
+            map_finding_row,
+        )
+        .optional()?;
+    Ok(rec)
+}
+
+fn resolve_finding(conn: &Connection, token: &str) -> Result<Option<StoredFinding>> {
+    let token = token.trim();
+    if let Some(found) = load_finding_by_internal(conn, token)? {
+        return Ok(Some(found));
+    }
+    if let Some((case_id, display_id)) = token.split_once('/') {
+        return Ok(conn
+            .query_row(
+                &format!("{FINDING_SELECT} FROM findings WHERE case_id = ?1 AND display_id = ?2"),
+                params![case_id, display_id],
+                map_finding_row,
+            )
+            .optional()?);
+    }
+    if let Some(compact) = parse_compact_public_id(token) {
+        return Ok(conn
+            .query_row(
+                &format!("{FINDING_SELECT} FROM findings WHERE case_id = ?1 AND display_id = ?2"),
+                params![compact.0, compact.1],
+                map_finding_row,
+            )
+            .optional()?);
+    }
+    if let Some(display) = legacy_display_id(token) {
+        let mut stmt = conn.prepare(&format!(
+            "{FINDING_SELECT} FROM findings WHERE display_id = ?1"
+        ))?;
+        let rows: Vec<StoredFinding> = stmt
+            .query_map([display], map_finding_row)?
+            .filter_map(|r| r.ok())
+            .collect();
+        if rows.len() == 1 {
+            return Ok(rows.into_iter().next());
+        }
+    }
+    Ok(None)
+}
+
+fn parse_compact_public_id(token: &str) -> Option<(String, String)> {
+    // SH-260814-B55F-F0001
+    let idx = token.rfind("-F")?;
+    let case_id = token[..idx].to_string();
+    let num = token.get(idx + 2..)?;
+    if !case_id.starts_with("SH-") || !num.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let n: u32 = num.parse().ok()?;
+    Some((case_id, FindingId::display(n).0))
+}
+
+fn legacy_display_id(token: &str) -> Option<String> {
+    if token.starts_with("F-") {
+        return Some(token.to_string());
+    }
+    if let Some(rest) = token.strip_prefix("SH-F-") {
+        if rest.chars().all(|c| c.is_ascii_digit()) {
+            let n: u32 = rest.parse().ok()?;
+            return Some(FindingId::display(n).0);
+        }
+    }
+    None
+}
+
+fn merge_existing_finding(
+    conn: &Connection,
+    found: &StoredFinding,
+    c: &CandidateFinding,
+    incoming_endpoints_json: &str,
+) -> Result<()> {
+    let incoming: Vec<String> = serde_json::from_str(incoming_endpoints_json).unwrap_or_default();
+    let mut endpoints = found.affected_endpoints.clone();
+    for ep in incoming {
+        if !ep.trim().is_empty() && !endpoints.iter().any(|e| e == &ep) {
+            endpoints.push(ep);
+        }
+    }
+    let evidence = crate::correlation::dedup::append_unique_evidence(
+        &found.evidence_summary,
+        &c.evidence_summary,
+    );
+    let confidence = if c.confidence > found.confidence {
+        c.confidence
+    } else {
+        found.confidence
+    };
+    let mut description = found.description.clone();
+    let n = endpoints.len();
+    if n > 1 && !description.contains("Affected endpoints:") {
+        description = format!("{}\n\nAffected endpoints: {n}", description.trim());
+    } else if n > 1 {
+        if let Some(idx) = description.rfind("Affected endpoints:") {
+            description = format!("{}Affected endpoints: {n}", &description[..idx]);
+        }
+    }
+    let endpoints_json = serde_json::to_string(&endpoints)?;
+    conn.execute(
+        "UPDATE findings SET affected_endpoints = ?1, evidence_summary = ?2, description = ?3,
+         confidence = ?4, status = ?4 WHERE internal_id = ?5",
+        params![
+            endpoints_json,
+            evidence,
+            description,
+            confidence.as_str(),
+            found.internal_id
+        ],
+    )?;
+    Ok(())
+}
+
+fn is_fingerprint_unique_violation(err: &rusqlite::Error) -> bool {
+    match err {
+        rusqlite::Error::SqliteFailure(_, Some(msg)) => {
+            msg.contains("UNIQUE constraint failed") && msg.contains("fingerprint")
+        }
+        _ => false,
+    }
+}
+
 fn parse_sev(s: &str) -> Severity {
     match s {
         "critical" => Severity::Critical,
@@ -588,11 +795,13 @@ mod tests {
             evidence_summary: "header absent".into(),
             fingerprint: "example.com|GET|/|missing_csp".into(),
             source_engine: "sherlock-core".into(),
+            ..Default::default()
         };
-        let fid = db.upsert_finding(&id.0, &c).unwrap();
-        assert!(fid.starts_with("SH-F-"));
+        let stored = db.persist_final_finding(&id.0, &c).unwrap();
+        assert_eq!(stored.display_id, "F-0001");
+        assert_eq!(stored.id, "SH-260814-TEST/F-0001");
         assert_eq!(db.list_findings(&id.0).unwrap().len(), 1);
         let fid2 = db.upsert_finding(&id.0, &c).unwrap();
-        assert_eq!(fid, fid2);
+        assert_eq!(stored.internal_id, fid2);
     }
 }

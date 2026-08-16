@@ -88,7 +88,11 @@ pub enum Commands {
     /// Show optional engine status
     Engines,
     /// System diagnostics
-    Doctor,
+    Doctor {
+        /// Inspect Evidence Vault schema and migration status
+        #[arg(long)]
+        database: bool,
+    },
     /// Configuration
     Config {
         #[command(subcommand)]
@@ -184,5 +188,33 @@ impl Cli {
             return f == "json" || f == "jsonl" || f == "sarif";
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn version_and_help_parse() {
+        assert!(Cli::try_parse_from(["sherlock", "version"]).is_ok());
+        assert!(Cli::try_parse_from(["sherlock", "doctor"]).is_ok());
+        assert!(Cli::try_parse_from(["sherlock", "scan", "--help"]).is_err());
+    }
+
+    #[test]
+    fn invalid_subcommand_fails() {
+        assert!(Cli::try_parse_from(["sherlock", "explode-the-lab"]).is_err());
+    }
+
+    #[test]
+    fn findings_accepts_global_format_flag() {
+        let cli = Cli::try_parse_from(["sherlock", "findings", "SH-1", "--format", "pdf"]).unwrap();
+        assert_eq!(cli.format.as_deref(), Some("pdf"));
+        match cli.command {
+            Some(Commands::Findings { case_id }) => assert_eq!(case_id, "SH-1"),
+            _ => panic!("expected findings"),
+        }
     }
 }

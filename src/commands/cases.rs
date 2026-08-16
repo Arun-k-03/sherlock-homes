@@ -76,6 +76,7 @@ pub async fn resume(
         resume: Some(case_id.into()),
     };
     let opts = ScanOptions::from_args(&args, cfg);
-    run_scan(db, cfg, opts, renderer, cancel).await?;
+    let id = run_scan(db, cfg, opts, renderer, cancel).await?;
+    renderer.print_case_footer(&id.0);
     Ok(())
 }

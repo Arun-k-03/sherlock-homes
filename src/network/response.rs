@@ -29,9 +29,49 @@ impl RecordedResponse {
     }
 
     pub fn is_html(&self) -> bool {
-        self.content_type
+        if self
+            .content_type
             .as_deref()
-            .map(|c| c.contains("html"))
+            .map(|c| c.to_ascii_lowercase().contains("html"))
             .unwrap_or(false)
+        {
+            return true;
+        }
+        self.text().to_ascii_lowercase().contains("<html")
+    }
+
+    pub fn is_success(&self) -> bool {
+        (200..300).contains(&self.status)
+    }
+
+    pub fn is_document_like(&self) -> bool {
+        let ct = self
+            .content_type
+            .as_deref()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if ct.is_empty() {
+            return self.is_html() || self.body_text.is_some();
+        }
+        ct.contains("html")
+            || ct.contains("json")
+            || ct.contains("xml")
+            || ct.contains("javascript")
+            || ct.starts_with("text/")
+    }
+
+    pub fn is_binary_asset(&self) -> bool {
+        let ct = self
+            .content_type
+            .as_deref()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        ct.starts_with("image/")
+            || ct.starts_with("audio/")
+            || ct.starts_with("video/")
+            || ct.starts_with("font/")
+            || ct.contains("pdf")
+            || ct.contains("octet-stream")
+            || ct.contains("zip")
     }
 }

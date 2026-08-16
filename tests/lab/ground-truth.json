@@ -1,0 +1,88 @@
+[
+  {
+    "route": "/headers/vulnerable",
+    "kind": "positive",
+    "expected": [
+      "missing_csp",
+      "missing_xcto",
+      "x_frame_options",
+      "missing_referrer_policy"
+    ]
+  },
+  {
+    "route": "/headers/secure",
+    "kind": "negative",
+    "expected": [
+      "missing_csp",
+      "missing_xcto",
+      "x_frame_options",
+      "missing_referrer_policy",
+      "missing_hsts"
+    ]
+  },
+  {
+    "route": "/headers/404",
+    "kind": "negative",
+    "expected": ["missing_csp", "missing_xcto", "x_frame_options", "missing_referrer_policy"]
+  },
+  {
+    "route": "/headers/image",
+    "kind": "negative",
+    "expected": ["missing_csp", "x_frame_options", "missing_referrer_policy"]
+  },
+  {
+    "route": "/cookies/vulnerable",
+    "kind": "positive",
+    "expected": ["cookie_flags"]
+  },
+  {
+    "route": "/cookies/secure",
+    "kind": "negative",
+    "expected": ["cookie_flags"]
+  },
+  {
+    "route": "/cors/vulnerable",
+    "kind": "positive",
+    "expected": ["cors_misconfig"]
+  },
+  {
+    "route": "/cors/secure",
+    "kind": "negative",
+    "expected": ["cors_misconfig"]
+  },
+  {
+    "route": "/debug/vulnerable",
+    "kind": "positive",
+    "expected": ["verbose_error"]
+  },
+  {
+    "route": "/debug/secure",
+    "kind": "negative",
+    "expected": ["verbose_error"]
+  },
+  {
+    "route": "/sourcemap/vulnerable",
+    "kind": "positive",
+    "expected": ["source_map"]
+  },
+  {
+    "route": "/sourcemap/secure",
+    "kind": "negative",
+    "expected": ["source_map"]
+  },
+  {
+    "route": "/secrets/vulnerable",
+    "kind": "positive",
+    "expected": ["secret_exposure"]
+  },
+  {
+    "route": "/secrets/secure",
+    "kind": "negative",
+    "expected": ["secret_exposure"]
+  },
+  {
+    "route": "/secrets/false-positive",
+    "kind": "negative",
+    "expected": ["secret_exposure"]
+  }
+]

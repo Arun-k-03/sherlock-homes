@@ -7,7 +7,8 @@ pub fn map_class_severity(class_id: &str) -> Severity {
         "missing_hsts" | "cookie_flags" | "missing_csp" | "x_frame_options" => Severity::Low,
         "cors_misconfig" => Severity::Medium,
         "source_map" | "server_banner" | "verbose_error" => Severity::Low,
-        "secret_exposure" | "exposed_file" => Severity::High,
+        "secret_exposure" => Severity::Medium,
+        "exposed_file" => Severity::High,
         "authz_inconsistency" => Severity::High,
         "info_disclosure" => Severity::Low,
         _ => Severity::Informational,
@@ -19,7 +20,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn secret_is_high() {
-        assert_eq!(map_class_severity("secret_exposure"), Severity::High);
+    fn generic_secret_default_is_medium() {
+        assert_eq!(map_class_severity("secret_exposure"), Severity::Medium);
     }
 }

@@ -132,6 +132,8 @@ impl Detector for ReflectedXss {
                     "reflected_xss",
                 ),
                 source_engine: "sherlock-core".into(),
+                host: endpoint.host.clone(),
+                ..Default::default()
             });
         }
         Ok(out)

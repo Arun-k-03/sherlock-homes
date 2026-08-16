@@ -43,7 +43,10 @@ impl Detector for SecurityHeaders {
         let Some(page) = page_for(ctx, endpoint) else {
             return Ok(vec![]);
         };
-        if page.status >= 400 {
+        if !page.is_success() {
+            return Ok(vec![]);
+        }
+        if page.is_binary_asset() {
             return Ok(vec![]);
         }
         let mut out = Vec::new();
@@ -106,6 +109,18 @@ impl Detector for SecurityHeaders {
             if hdr == "strict-transport-security" && !endpoint.url.starts_with("https://") {
                 continue;
             }
+            if matches!(
+                hdr,
+                "content-security-policy" | "x-frame-options" | "referrer-policy"
+            ) && !page.is_html()
+                && !page
+                    .content_type
+                    .as_deref()
+                    .map(|c| c.contains("xml"))
+                    .unwrap_or(false)
+            {
+                continue;
+            }
             let _ = has_csp;
             out.push(finding(
                 ctx,
@@ -146,6 +161,9 @@ impl Detector for CookieFlags {
         let Some(page) = page_for(ctx, endpoint) else {
             return Ok(vec![]);
         };
+        if !page.is_success() {
+            return Ok(vec![]);
+        }
         let mut out = Vec::new();
         for c in crate::network::cookies::parse_set_cookie(&page.headers) {
             if c.name.is_empty() {
@@ -204,6 +222,9 @@ impl Detector for CorsPassive {
         let Some(page) = page_for(ctx, endpoint) else {
             return Ok(vec![]);
         };
+        if !page.is_success() {
+            return Ok(vec![]);
+        }
         let mut out = Vec::new();
         if let Some(acao) = page.header("access-control-allow-origin") {
             if acao.trim() == "*" {
@@ -274,5 +295,7 @@ fn finding(
             class,
         ),
         source_engine: "sherlock-core".into(),
+        host: endpoint.host.clone(),
+        ..Default::default()
     }
 }
