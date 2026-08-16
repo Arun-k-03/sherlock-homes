@@ -1,22 +1,54 @@
-# Changelog
-
-All notable changes to Sherlock Homes are documented here. Versioning follows [Semantic Versioning](https://semver.org/):
-
-- `1.0.x` — bug fixes and hardening that do not break CLI/schema
-- `1.x.0` — backward-compatible features
-- `2.0.0` — breaking CLI, machine-output, or vault schema changes
-
 ## Unreleased
 
-- Crawler request/page/queue budgets and generated-artifact path guards
-- JavaScript string literals are clues, not automatic same-origin crawl targets
-- Clue UI uses a single HTTP method (no `GET GET /path`)
-- Host-level findings sample endpoints in CLI/PDF/HTML; full list stays in the vault
-- Header detectors apply to successful document-like responses, not 4xx/binary assets
-- Local detector lab + `target/detector-benchmark.json`
-- `sherlock findings --format pdf` rejected with guidance to `sherlock report`
-- Open-source docs, issue templates, and release packaging notes
+No unreleased changes yet.
 
-## 1.0.0
+## 1.0.1 - 2026-08-16
 
-- Initial public-intended engine: CLI, vault schema 001→002, reports, optional engine stubs
+### Security
+
+- Upgraded the PDF reporting engine from `printpdf 0.7.0` to `printpdf 0.11.2`.
+- Upgraded transitive `lopdf` from vulnerable `0.31.0` to `0.44.0`.
+- Resolved `RUSTSEC-2026-0187`.
+- Preserved PDF report generation using the new operation-based printpdf API.
+- Evidence and secret redaction hardening for credential-like material.
+
+### Fixed
+
+- Minified JavaScript API-key aliases no longer generate high-confidence secret false positives.
+- JavaScript string literals are no longer automatically treated as same-origin crawl targets.
+- RPC-style API paths are not blindly crawled.
+- Fixed duplicated HTTP method output such as `GET GET /path`.
+- Fixed finding identity collisions across independent cases.
+- Fixed Cargo packaging so all report modules are included.
+
+### Hardened
+
+- Added crawler request, page, depth, queue, and child budgets.
+- Added generated-artifact and unsafe-path crawl guards.
+- Added status-code and content-type-aware detector behavior.
+- Improved host-level finding correlation and endpoint evidence sampling.
+- Added migration upgrade, idempotence, and legacy-schema regression coverage.
+- Added detector accuracy ground-truth tests.
+
+### Reports
+
+- Added PDF, HTML, JSON, JSONL, SARIF, Markdown, and CSV report support.
+- Added public finding IDs and affected-endpoint reporting.
+- Corrected SARIF repository metadata.
+
+### Project
+
+- Added Windows, Linux, and macOS CI.
+- Added RustSec dependency auditing.
+- Added GitHub release packaging.
+- Added contribution, security, code-of-conduct, development, configuration, migration, and Termux documentation.
+- Added issue and pull-request templates.
+
+### Validation
+
+- Windows local GNU validation passed.
+- Ubuntu GitHub Actions passed.
+- Windows GitHub Actions passed.
+- macOS GitHub Actions passed.
+- RustSec blocking vulnerability audit passed.
+- 90 automated tests passed.
