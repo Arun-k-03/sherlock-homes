@@ -7,11 +7,19 @@ authors = ["Sherlock Homes"]
 description = "Sherlock Homes — Cyber Investigation Engine. Every request leaves a clue."
 license = "MIT"
 readme = "README.md"
+
+repository = "https://github.com/Arun-k-03/sherlock-homes"
+homepage = "https://github.com/Arun-k-03/sherlock-homes"
+
 keywords = ["security", "scanner", "cli", "owasp", "dast"]
 categories = ["command-line-utilities", "web-programming"]
 default-run = "sherlock"
-exclude = ["reports", "tmp-clone", "result.json"]
-# repository / homepage: TODO — set after the public GitHub URL exists. Do not invent one.
+
+exclude = [
+    "/reports",
+    "/tmp-clone",
+    "/result.json",
+]
 
 [[bin]]
 name = "sherlock"

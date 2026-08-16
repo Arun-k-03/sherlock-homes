@@ -6,7 +6,7 @@
 .env
 .env.*
 !.env.example
-reports/
+/reports/
 *.pdf
 !docs/**
 .DS_Store
