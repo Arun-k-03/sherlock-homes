@@ -1,127 +1,143 @@
 use crate::core::types::Severity;
 use crate::reports::ReportBundle;
 use printpdf::*;
-use std::fs::File;
-use std::io::BufWriter;
+use std::fs;
 use std::path::Path;
 
 pub fn write(bundle: &ReportBundle, path: &Path) -> crate::Result<()> {
-    let (doc, page1, layer1) = PdfDocument::new(
-        "Sherlock Homes Investigation Report",
-        Mm(210.0),
-        Mm(297.0),
-        "Layer 1",
-    );
-    let font = doc
-        .add_builtin_font(BuiltinFont::Helvetica)
-        .map_err(|e| crate::SherlockError::Report(e.to_string()))?;
-    let font_b = doc
-        .add_builtin_font(BuiltinFont::HelveticaBold)
-        .map_err(|e| crate::SherlockError::Report(e.to_string()))?;
+    let mut doc = PdfDocument::new("Sherlock Homes Investigation Report");
+    let mut pages = Vec::new();
 
-    let layer = doc.get_page(page1).get_layer(layer1);
-    fill_title(&layer, &font_b, &font, bundle);
+    // Title page
+    let mut ops = Vec::new();
+    fill_title(&mut ops, bundle);
+    pages.push(a4_page(ops));
 
-    let (page2, layer2) = doc.add_page(Mm(210.0), Mm(297.0), "Summary");
-    let layer = doc.get_page(page2).get_layer(layer2);
-    fill_summary(&layer, &font_b, &font, bundle);
+    // Summary page
+    let mut ops = Vec::new();
+    fill_summary(&mut ops, bundle);
+    pages.push(a4_page(ops));
 
-    for (i, f) in bundle.findings.iter().enumerate() {
-        let (p, l) = doc.add_page(Mm(210.0), Mm(297.0), format!("Finding {}", i + 1));
-        let layer = doc.get_page(p).get_layer(l);
-        fill_finding(&layer, &font_b, &font, f, i + 1);
+    // One page per finding
+    for (i, finding) in bundle.findings.iter().enumerate() {
+        let mut ops = Vec::new();
+        fill_finding(&mut ops, finding, i + 1);
+        pages.push(a4_page(ops));
     }
 
-    let (pa, la) = doc.add_page(Mm(210.0), Mm(297.0), "Appendix");
-    let layer = doc.get_page(pa).get_layer(la);
+    // Appendix
+    let mut ops = Vec::new();
+
     text(
-        &layer,
-        &font_b,
+        &mut ops,
+        BuiltinFont::HelveticaBold,
         14.0,
         Mm(20.0),
         Mm(270.0),
         "10. Technical Appendix",
     );
+
     text(
-        &layer,
-        &font,
+        &mut ops,
+        BuiltinFont::Helvetica,
         10.0,
         Mm(20.0),
         Mm(255.0),
         "Sherlock Homes records evidence in the local Evidence Vault (SQLite).",
     );
+
     text(
-        &layer,
-        &font,
+        &mut ops,
+        BuiltinFont::Helvetica,
         10.0,
         Mm(20.0),
         Mm(248.0),
         "Automated scanning cannot guarantee 100% vulnerability detection.",
     );
+
     text(
-        &layer,
-        &font,
+        &mut ops,
+        BuiltinFont::Helvetica,
         10.0,
         Mm(20.0),
         Mm(241.0),
         "Destructive testing, credential attacks, and DoS are out of scope for default SAFE mode.",
     );
 
-    doc.save(&mut BufWriter::new(File::create(path)?))
-        .map_err(|e| crate::SherlockError::Report(e.to_string()))?;
+    pages.push(a4_page(ops));
+
+    doc.with_pages(pages);
+
+    let mut warnings = Vec::new();
+    let pdf_bytes = doc.save(&PdfSaveOptions::default(), &mut warnings);
+
+    fs::write(path, pdf_bytes)?;
+
     Ok(())
 }
 
-fn fill_title(
-    layer: &PdfLayerReference,
-    bold: &IndirectFontRef,
-    font: &IndirectFontRef,
-    b: &ReportBundle,
-) {
-    text(layer, bold, 22.0, Mm(20.0), Mm(275.0), "SHERLOCK HOMES");
+fn a4_page(ops: Vec<Op>) -> PdfPage {
+    PdfPage::new(Mm(210.0), Mm(297.0), ops)
+}
+
+fn fill_title(ops: &mut Vec<Op>, b: &ReportBundle) {
     text(
-        layer,
-        font,
+        ops,
+        BuiltinFont::HelveticaBold,
+        22.0,
+        Mm(20.0),
+        Mm(275.0),
+        "SHERLOCK HOMES",
+    );
+
+    text(
+        ops,
+        BuiltinFont::Helvetica,
         12.0,
         Mm(20.0),
         Mm(262.0),
         "Cyber Investigation Report",
     );
+
     text(
-        layer,
-        bold,
+        ops,
+        BuiltinFont::HelveticaBold,
         12.0,
         Mm(20.0),
         Mm(220.0),
         &format!("Case: {}", b.case_id),
     );
+
     text(
-        layer,
-        font,
+        ops,
+        BuiltinFont::Helvetica,
         11.0,
         Mm(20.0),
         Mm(208.0),
         &format!("Target: {}", trunc(&b.target, 80)),
     );
+
     text(
-        layer,
-        font,
+        ops,
+        BuiltinFont::Helvetica,
         11.0,
         Mm(20.0),
         Mm(196.0),
         &format!("Generated: {}", b.generated),
     );
+
     text(
-        layer,
-        font,
+        ops,
+        BuiltinFont::Helvetica,
         11.0,
         Mm(20.0),
         Mm(184.0),
         &format!("Mode: {}", b.mode),
     );
+
     text(
-        layer,
-        font,
+        ops,
+        BuiltinFont::Helvetica,
         10.0,
         Mm(20.0),
         Mm(40.0),
@@ -129,23 +145,19 @@ fn fill_title(
     );
 }
 
-fn fill_summary(
-    layer: &PdfLayerReference,
-    bold: &IndirectFontRef,
-    font: &IndirectFontRef,
-    b: &ReportBundle,
-) {
+fn fill_summary(ops: &mut Vec<Op>, b: &ReportBundle) {
     text(
-        layer,
-        bold,
+        ops,
+        BuiltinFont::HelveticaBold,
         16.0,
         Mm(20.0),
         Mm(275.0),
         "1. Executive Summary",
     );
+
     text(
-        layer,
-        font,
+        ops,
+        BuiltinFont::Helvetica,
         10.0,
         Mm(20.0),
         Mm(262.0),
@@ -155,92 +167,71 @@ fn fill_summary(
             trunc(&b.target, 50)
         ),
     );
+
     text(
-        layer,
-        bold,
+        ops,
+        BuiltinFont::HelveticaBold,
         14.0,
         Mm(20.0),
         Mm(240.0),
         "5. Severity Distribution",
     );
+
     let crit = count(b, Severity::Critical) as f32;
     let high = count(b, Severity::High) as f32;
     let med = count(b, Severity::Medium) as f32;
     let low = count(b, Severity::Low) as f32;
     let info = count(b, Severity::Informational) as f32;
+
     let max = crit.max(high).max(med).max(low).max(info).max(1.0);
+
     draw_bar(
-        layer,
-        font,
+        ops,
         Mm(20.0),
         Mm(210.0),
         crit / max,
         "Critical",
         crit as u32,
     );
-    draw_bar(
-        layer,
-        font,
-        Mm(20.0),
-        Mm(195.0),
-        high / max,
-        "High",
-        high as u32,
-    );
-    draw_bar(
-        layer,
-        font,
-        Mm(20.0),
-        Mm(180.0),
-        med / max,
-        "Medium",
-        med as u32,
-    );
-    draw_bar(
-        layer,
-        font,
-        Mm(20.0),
-        Mm(165.0),
-        low / max,
-        "Low",
-        low as u32,
-    );
-    draw_bar(
-        layer,
-        font,
-        Mm(20.0),
-        Mm(150.0),
-        info / max,
-        "Info",
-        info as u32,
-    );
+
+    draw_bar(ops, Mm(20.0), Mm(195.0), high / max, "High", high as u32);
+
+    draw_bar(ops, Mm(20.0), Mm(180.0), med / max, "Medium", med as u32);
+
+    draw_bar(ops, Mm(20.0), Mm(165.0), low / max, "Low", low as u32);
+
+    draw_bar(ops, Mm(20.0), Mm(150.0), info / max, "Info", info as u32);
+
     text(
-        layer,
-        bold,
+        ops,
+        BuiltinFont::HelveticaBold,
         12.0,
         Mm(20.0),
         Mm(125.0),
         "2-4. Scope / Methodology / Overview",
     );
+
     text(
-        layer,
-        font,
+        ops,
+        BuiltinFont::Helvetica,
         10.0,
         Mm(20.0),
         Mm(115.0),
         "Scope is the authorized target host plus --allow hosts.",
     );
+
     text(
-        layer,
-        font,
+        ops,
+        BuiltinFont::Helvetica,
         10.0,
         Mm(20.0),
         Mm(108.0),
         "Methodology: discover, map, observe, test (safe), verify, correlate, score.",
     );
+
     text(
-        layer,
-        font,
+        ops,
+        BuiltinFont::Helvetica,
         10.0,
         Mm(20.0),
         Mm(101.0),
@@ -248,25 +239,28 @@ fn fill_summary(
     );
 }
 
-fn fill_finding(
-    layer: &PdfLayerReference,
-    bold: &IndirectFontRef,
-    font: &IndirectFontRef,
-    f: &crate::evidence::model::StoredFinding,
-    n: usize,
-) {
+fn fill_finding(ops: &mut Vec<Op>, f: &crate::evidence::model::StoredFinding, n: usize) {
     text(
-        layer,
-        bold,
+        ops,
+        BuiltinFont::HelveticaBold,
         14.0,
         Mm(20.0),
         Mm(275.0),
         &format!("7. Finding {n}: {}", f.id),
     );
-    text(layer, bold, 12.0, Mm(20.0), Mm(262.0), &trunc(&f.title, 90));
+
     text(
-        layer,
-        font,
+        ops,
+        BuiltinFont::HelveticaBold,
+        12.0,
+        Mm(20.0),
+        Mm(262.0),
+        &trunc(&f.title, 90),
+    );
+
+    text(
+        ops,
+        BuiltinFont::Helvetica,
         10.0,
         Mm(20.0),
         Mm(248.0),
@@ -276,9 +270,10 @@ fn fill_finding(
             f.confidence.label()
         ),
     );
+
     text(
-        layer,
-        font,
+        ops,
+        BuiltinFont::Helvetica,
         10.0,
         Mm(20.0),
         Mm(240.0),
@@ -288,9 +283,10 @@ fn fill_finding(
             f.owasp.as_deref().unwrap_or("n/a")
         ),
     );
+
     text(
-        layer,
-        font,
+        ops,
+        BuiltinFont::Helvetica,
         10.0,
         Mm(20.0),
         Mm(232.0),
@@ -301,64 +297,149 @@ fn fill_finding(
                 .unwrap_or("not computed (metrics incomplete)")
         ),
     );
+
+    let affected = {
+        let (sample, remaining) = f.sample_affected_endpoints(8);
+        let mut value = sample.join(" | ");
+
+        if remaining > 0 {
+            value.push_str(&format!(" | +{remaining} more (see appendix / JSON)"));
+        }
+
+        value
+    };
+
     text(
-        layer,
-        font,
+        ops,
+        BuiltinFont::Helvetica,
         10.0,
         Mm(20.0),
         Mm(224.0),
-        &format!("Affected endpoints: {}", {
-            let (sample, remaining) = f.sample_affected_endpoints(8);
-            let mut s = sample.join(" | ");
-            if remaining > 0 {
-                s.push_str(&format!(" | +{remaining} more (see appendix / JSON)"));
-            }
-            s
-        }),
+        &format!("Affected endpoints: {affected}"),
     );
+
     text(
-        layer,
-        font,
+        ops,
+        BuiltinFont::Helvetica,
         10.0,
         Mm(20.0),
         Mm(216.0),
         &format!("Parameter: {}", f.parameter.as_deref().unwrap_or("-")),
     );
-    wrap(layer, font, Mm(20.0), Mm(200.0), &f.description);
-    text(layer, bold, 11.0, Mm(20.0), Mm(150.0), "Observed evidence");
-    wrap(layer, font, Mm(20.0), Mm(140.0), &f.evidence_summary);
-    text(layer, bold, 11.0, Mm(20.0), Mm(90.0), "Remediation");
-    wrap(layer, font, Mm(20.0), Mm(80.0), &f.remediation);
+
+    wrap(
+        ops,
+        BuiltinFont::Helvetica,
+        Mm(20.0),
+        Mm(200.0),
+        &f.description,
+    );
+
+    text(
+        ops,
+        BuiltinFont::HelveticaBold,
+        11.0,
+        Mm(20.0),
+        Mm(150.0),
+        "Observed evidence",
+    );
+
+    wrap(
+        ops,
+        BuiltinFont::Helvetica,
+        Mm(20.0),
+        Mm(140.0),
+        &f.evidence_summary,
+    );
+
+    text(
+        ops,
+        BuiltinFont::HelveticaBold,
+        11.0,
+        Mm(20.0),
+        Mm(90.0),
+        "Remediation",
+    );
+
+    wrap(
+        ops,
+        BuiltinFont::Helvetica,
+        Mm(20.0),
+        Mm(80.0),
+        &f.remediation,
+    );
 }
 
-fn wrap(layer: &PdfLayerReference, font: &IndirectFontRef, x: Mm, mut y: Mm, text_in: &str) {
-    let t = trunc(text_in, 900);
-    for chunk in t.as_bytes().chunks(90) {
-        let line = String::from_utf8_lossy(chunk);
-        text(layer, font, 9.0, x, y, &line);
-        y = Mm(y.0 - 5.0);
-        if y.0 < 20.0 {
-            break;
+fn wrap(ops: &mut Vec<Op>, font: BuiltinFont, x: Mm, mut y: Mm, text_in: &str) {
+    let value = trunc(text_in, 900);
+
+    let mut line = String::new();
+    let mut count = 0usize;
+
+    for ch in value.chars() {
+        if ch == '\n' || count >= 90 {
+            if !line.is_empty() {
+                text(ops, font, 9.0, x, y, &line);
+                y = Mm(y.0 - 5.0);
+            }
+
+            if y.0 < 20.0 {
+                return;
+            }
+
+            line.clear();
+            count = 0;
+
+            if ch == '\n' {
+                continue;
+            }
         }
+
+        line.push(ch);
+        count += 1;
+    }
+
+    if !line.is_empty() && y.0 >= 20.0 {
+        text(ops, font, 9.0, x, y, &line);
     }
 }
 
-fn draw_bar(
-    layer: &PdfLayerReference,
-    font: &IndirectFontRef,
-    x: Mm,
-    y: Mm,
-    frac: f32,
-    label: &str,
-    n: u32,
-) {
-    let filled = ((frac * 24.0) as usize).clamp(1, 24);
+fn draw_bar(ops: &mut Vec<Op>, x: Mm, y: Mm, frac: f32, label: &str, n: u32) {
+    let filled = if n == 0 {
+        0
+    } else {
+        ((frac * 24.0) as usize).clamp(1, 24)
+    };
+
     let bar = "#".repeat(filled);
-    text(layer, font, 10.0, x, y, &format!("{label:<10} {bar} ({n})"));
+
+    text(
+        ops,
+        BuiltinFont::Helvetica,
+        10.0,
+        x,
+        y,
+        &format!("{label:<10} {bar} ({n})"),
+    );
 }
 
-fn text(layer: &PdfLayerReference, font: &IndirectFontRef, size: f32, x: Mm, y: Mm, s: &str) {
-    layer.use_text(s, size, x, y, font);
+fn text(ops: &mut Vec<Op>, font: BuiltinFont, size: f32, x: Mm, y: Mm, value: &str) {
+    ops.push(Op::StartTextSection);
+
+    ops.push(Op::SetTextCursor {
+        pos: Point::new(x, y),
+    });
+
+    ops.push(Op::SetFont {
+        font: PdfFontHandle::Builtin(font),
+        size: Pt(size),
+    });
+
+    ops.push(Op::ShowText {
+        items: vec![TextItem::Text(value.to_string())],
+    });
+
+    ops.push(Op::EndTextSection);
 }
 
 fn trunc(s: &str, n: usize) -> String {
@@ -379,6 +460,7 @@ mod tests {
     fn writes_pdf() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.pdf");
+
         let bundle = ReportBundle {
             schema: "t",
             case_id: "SH-260814-TEST".into(),
@@ -410,7 +492,10 @@ mod tests {
                 affected_endpoints: vec!["GET /".into()],
             }],
         };
+
         write(&bundle, &path).unwrap();
+
+        assert!(path.exists());
         assert!(path.metadata().unwrap().len() > 100);
     }
 }
